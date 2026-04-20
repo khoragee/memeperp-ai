@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 from fastapi import FastAPI
@@ -8,7 +9,8 @@ from myx_client import get_all_prices
 
 app = FastAPI(title="MemePerp AI Agent")
 
-import os if os.path.exists("static"):     app.mount("/static", StaticFiles(directory="static"), name="static")
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 agent_running = False
 agent_thread = None
@@ -54,10 +56,7 @@ async def run_once():
 
 @app.get("/agent/status")
 async def agent_status():
-    return {
-        "running": agent_running,
-        "last_cycle": last_cycle_result
-    }
+    return {"running": agent_running, "last_cycle": last_cycle_result}
 
 @app.get("/portfolio")
 async def portfolio():
