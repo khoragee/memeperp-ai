@@ -236,7 +236,7 @@ def run_agent_cycle():
         if not pos.get("direction") == "LONG":
             pnl_pct = -pnl_pct
 
-        if pnl_pct >= 5 or pnl_pct <= -3:
+        if pnl_pct >= 1 or pnl_pct <= -1:
             close = simulate_close(
                 ticker=pos["ticker"],
                 is_long=pos["direction"] == "LONG",
