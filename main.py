@@ -8,7 +8,7 @@ from myx_client import get_all_prices
 
 app = FastAPI(title="MemePerp AI Agent")
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+import os if os.path.exists("static"):     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 agent_running = False
 agent_thread = None
