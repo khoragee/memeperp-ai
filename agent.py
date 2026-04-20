@@ -184,7 +184,12 @@ def run_agent_cycle():
         return {"error": "Could not fetch MYX market data", "trades": [], "positions": open_positions}
 
     cycle_results = []
-    # Only trade markets we don't already have open positions in open_tickers = [p["ticker"] for p in open_positions] top_markets = [m for m in prices[:10] if m["ticker"] not in open_tickers][:3]
+
+    # Only trade markets we don't already have open positions in
+    open_tickers = [p["ticker"] for p in open_positions]
+    top_markets = [m for m in prices[:10] if m["ticker"] not in open_tickers][:3]
+    if not top_markets:
+        top_markets = prices[:3]
 
     for market in top_markets:
         ticker = market["ticker"]
