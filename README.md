@@ -119,18 +119,6 @@ Open `http://localhost:8000` in your browser.
 
 ---
 
-## 🎯 Hackathon Bounties
-
-This project applies for:
-
-- **MYX Finance — Permissionless AI Perp Hunt ($5,000 USDT)**
-  - Autonomous AI agent trading perpetuals on MYX V2
-  - Live market data integration via MYX API
-  - AI-driven entry/exit decisions with TP/SL parameters
-  - Full MYX Router transaction payload generation
-
----
-
 ## 📁 Project Structure
 
 ```
