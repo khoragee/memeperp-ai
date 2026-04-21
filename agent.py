@@ -15,9 +15,9 @@ client = OpenAI(
 trade_log = []
 open_positions = []
 
-def analyze_market(ticker: str, market_data: dict) -> dict:
-    """Multi-model consensus — 3 AI models vote on trade direction"""
+MAX_POSITIONS = 6
 
+def analyze_market(ticker: str, market_data: dict) -> dict:
     prompt = f"""You are an aggressive AI trading agent for MYX Finance perpetual futures on BNB Chain.
 
 Market data for {ticker}:
@@ -106,8 +106,6 @@ Rules:
 
 
 def score_meme_token(token: dict) -> dict:
-    """AI scores a trending meme token 1-10 for trading potential"""
-
     prompt = f"""You are a meme coin analyst. Score this BSC token for trading potential.
 
 Token: {token.get('name', '')}
@@ -159,7 +157,6 @@ Rules:
 
 
 def scan_and_score_memes() -> list:
-    """Scan trending meme tokens and score them with AI"""
     from fourmeme_scanner import get_trending_tokens
     tokens = get_trending_tokens(limit=6)
     scored = []
@@ -172,8 +169,6 @@ def scan_and_score_memes() -> list:
 
 
 def run_agent_cycle():
-    """Run one full agent cycle"""
-
     print(f"\n{'='*50}")
     print(f"Agent cycle started: {datetime.now().strftime('%H:%M:%S')}")
     print(f"{'='*50}")
@@ -185,11 +180,13 @@ def run_agent_cycle():
 
     cycle_results = []
 
-    # Only trade markets we don't already have open positions in
-    open_tickers = [p["ticker"] for p in open_positions]
-    top_markets = [m for m in prices[:10] if m["ticker"] not in open_tickers][:3]
-    if not top_markets:
-        top_markets = prices[:3]
+    # Hard limit — max 6 open positions total
+    if len(open_positions) >= MAX_POSITIONS:
+        print(f"Max positions ({MAX_POSITIONS}) reached — skipping new trades this cycle")
+        top_markets = []
+    else:
+        open_tickers = [p["ticker"] for p in open_positions]
+        top_markets = [m for m in prices[:10] if m["ticker"] not in open_tickers][:3]
 
     for market in top_markets:
         ticker = market["ticker"]
@@ -229,6 +226,7 @@ def run_agent_cycle():
                 "analysis": analysis
             })
 
+    # Check open positions for exit signals
     positions_to_close = []
     for pos in open_positions:
         current_data = get_market_price(pos["ticker"])
@@ -268,7 +266,6 @@ def run_agent_cycle():
 
 
 def get_portfolio_summary():
-    """Get current portfolio state"""
     closed_trades = [t for t in trade_log if t.get("status") == "SIMULATED_CLOSE"]
     open_trades = [t for t in trade_log if t.get("status") == "SIMULATED"]
 
