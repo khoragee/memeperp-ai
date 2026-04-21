@@ -24,7 +24,7 @@ def agent_loop():
             last_cycle_result = result
         except Exception as e:
             last_cycle_result = {"error": str(e)}
-        time.sleep(60)
+        time.sleep(300)
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
