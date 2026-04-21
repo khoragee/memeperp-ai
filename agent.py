@@ -4,16 +4,17 @@ from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
 from myx_client import get_all_prices, get_market_price, simulate_order, simulate_close
+from database import init_db, save_trade, update_trade, get_open_positions, get_all_trades, get_portfolio_stats
 
 load_dotenv()
+
+# Initialize database on startup
+init_db()
 
 client = OpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
     base_url="https://api.groq.com/openai/v1"
 )
-
-trade_log = []
-open_positions = []
 
 MAX_POSITIONS = 6
 
@@ -107,7 +108,7 @@ Rules:
 
 
 def score_meme_token(token: dict) -> dict:
-    """Score meme token based on price action — no API call needed"""
+    """Score meme token based on price action"""
     try:
         change = float(token.get("price_change_24h", 0))
         volume = float(token.get("volume_24h", 0))
@@ -132,7 +133,6 @@ def score_meme_token(token: dict) -> dict:
             score -= 1
 
         score = max(1, min(10, score))
-
         sentiment = "BULLISH" if change > 5 else "BEARISH" if change < -5 else "NEUTRAL"
         risk = "HIGH" if abs(change) > 50 else "MEDIUM" if abs(change) > 20 else "LOW"
         reasoning = f"{'High' if volume > 1e6 else 'Low'} volume with {change:+.1f}% price change"
@@ -182,12 +182,15 @@ def run_agent_cycle():
     prices = get_all_prices()
 
     if not prices:
-        return {"error": "Could not fetch MYX market data", "trades": [], "positions": open_positions}
+        return {"error": "Could not fetch MYX market data", "trades": [], "positions": []}
 
     cycle_results = []
 
+    # Load positions from DB
+    open_positions = get_open_positions()
+
     if len(open_positions) >= MAX_POSITIONS:
-        print(f"Max positions ({MAX_POSITIONS}) reached — skipping new trades this cycle")
+        print(f"Max positions ({MAX_POSITIONS}) reached — skipping new trades")
         top_markets = []
     else:
         open_tickers = [p["ticker"] for p in open_positions]
@@ -203,7 +206,6 @@ def run_agent_cycle():
 
         analysis = analyze_market(ticker, detailed)
         print(f"Decision: {analysis['decision']} | Confidence: {analysis.get('confidence', 0)}%")
-        print(f"Reasoning: {analysis.get('reasoning', '')}")
 
         if analysis["decision"] in ["LONG", "SHORT"] and analysis.get("confidence", 0) > 30:
             is_long = analysis["decision"] == "LONG"
@@ -216,31 +218,24 @@ def run_agent_cycle():
             )
 
             order["analysis"] = analysis
-            order["id"] = f"trade_{len(trade_log)+1}_{int(datetime.now().timestamp())}"
+            order["id"] = f"trade_{int(datetime.now().timestamp())}_{ticker}"
+            order["created_at"] = datetime.now().isoformat()
 
-            trade_log.append(order)
-            open_positions.append(order)
-
-            print(f"Simulated {order['direction']} position opened on {ticker}")
+            save_trade(order)
+            print(f"Opened {order['direction']} on {ticker}")
             cycle_results.append(order)
-        else:
-            print(f"Skipping {ticker} - confidence too low")
-            cycle_results.append({
-                "ticker": ticker,
-                "decision": "SKIP",
-                "analysis": analysis
-            })
 
-    positions_to_close = []
+    # Check open positions for exit
+    open_positions = get_open_positions()
     for pos in open_positions:
         current_data = get_market_price(pos["ticker"])
         if not current_data:
             continue
 
         current_price = float(current_data["last_price"])
-        entry_price = pos["entry_price"]
+        entry_price = float(pos["entry_price"])
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
-        if not pos.get("direction") == "LONG":
+        if pos.get("direction") != "LONG":
             pnl_pct = -pnl_pct
 
         if pnl_pct >= 1 or pnl_pct <= -1:
@@ -252,34 +247,34 @@ def run_agent_cycle():
                 size=pos["size_amount"],
                 collateral=pos["collateral_usdc"]
             )
-            close["original_trade_id"] = pos.get("id")
-            trade_log.append(close)
-            positions_to_close.append(pos)
+            update_trade(pos["id"], {
+                "status": "SIMULATED_CLOSE",
+                "current_price": current_price,
+                "pnl_usdc": close["pnl_usdc"],
+                "pnl_percent": close["pnl_percent"],
+                "closed_at": datetime.now().isoformat()
+            })
             print(f"Closed {pos['ticker']} | PnL: {close['pnl_percent']}%")
 
-    for pos in positions_to_close:
-        open_positions.remove(pos)
-
+    stats = get_portfolio_stats()
     return {
         "cycle_time": datetime.now().isoformat(),
         "markets_analyzed": len(top_markets),
         "trades_this_cycle": cycle_results,
-        "open_positions": open_positions,
-        "total_trades": len(trade_log)
+        "total_trades": stats["total_trades"]
     }
 
 
 def get_portfolio_summary():
-    closed_trades = [t for t in trade_log if t.get("status") == "SIMULATED_CLOSE"]
-    open_trades = [t for t in trade_log if t.get("status") == "SIMULATED"]
-
-    total_pnl = sum(t.get("pnl_usdc", 0) for t in closed_trades)
+    stats = get_portfolio_stats()
+    trades = get_all_trades()
+    open_positions = get_open_positions()
 
     return {
-        "total_trades": len(trade_log),
-        "open_positions": len(open_trades),
-        "closed_positions": len(closed_trades),
-        "total_pnl_usdc": round(total_pnl, 4),
-        "trade_log": trade_log[-20:],
+        "total_trades": stats["total_trades"],
+        "open_positions": stats["open_positions"],
+        "closed_positions": stats["closed_positions"],
+        "total_pnl_usdc": stats["total_pnl_usdc"],
+        "trade_log": trades[:20],
         "open_positions_detail": open_positions
     }
