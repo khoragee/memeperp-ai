@@ -58,6 +58,7 @@ Rules:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
+                timeout=30,
             )
             content = response.choices[0].message.content.strip()
             content = content.replace("```json", "").replace("```", "").strip()
@@ -106,49 +107,54 @@ Rules:
 
 
 def score_meme_token(token: dict) -> dict:
-    prompt = f"""You are a meme coin analyst. Score this BSC token for trading potential.
-
-Token: {token.get('name', '')}
-Price: ${token.get('price', 0)}
-24h Volume: ${token.get('volume_24h', 0)}
-24h Price Change: {token.get('price_change_24h', 0)}%
-
-Respond ONLY with this exact JSON:
-{{
-  "score": 1-10,
-  "sentiment": "BULLISH" or "BEARISH" or "NEUTRAL",
-  "reasoning": "one sentence max",
-  "risk": "LOW" or "MEDIUM" or "HIGH"
-}}
-
-Rules:
-- High volume + positive price change = higher score
-- Negative price change > 50% = score 1-3
-- Score 8-10 only if volume > $1M and price change positive
-"""
-
+    """Score meme token based on price action — no API call needed"""
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-        content = response.choices[0].message.content.strip()
-        content = content.replace("```json", "").replace("```", "").strip()
-        result = json.loads(content)
-        result["name"] = token.get("name", "")
-        result["symbol"] = token.get("symbol", "")
-        result["price"] = token.get("price", 0)
-        result["volume_24h"] = token.get("volume_24h", 0)
-        result["price_change_24h"] = token.get("price_change_24h", 0)
-        return result
+        change = float(token.get("price_change_24h", 0))
+        volume = float(token.get("volume_24h", 0))
+
+        score = 5
+        if volume > 10_000_000:
+            score += 2
+        elif volume > 1_000_000:
+            score += 1
+
+        if change > 50:
+            score += 3
+        elif change > 20:
+            score += 2
+        elif change > 5:
+            score += 1
+        elif change < -50:
+            score -= 3
+        elif change < -20:
+            score -= 2
+        elif change < -5:
+            score -= 1
+
+        score = max(1, min(10, score))
+
+        sentiment = "BULLISH" if change > 5 else "BEARISH" if change < -5 else "NEUTRAL"
+        risk = "HIGH" if abs(change) > 50 else "MEDIUM" if abs(change) > 20 else "LOW"
+        reasoning = f"{'High' if volume > 1e6 else 'Low'} volume with {change:+.1f}% price change"
+
+        return {
+            "name": token.get("name", ""),
+            "symbol": token.get("symbol", ""),
+            "score": score,
+            "sentiment": sentiment,
+            "reasoning": reasoning,
+            "risk": risk,
+            "price": token.get("price", 0),
+            "volume_24h": token.get("volume_24h", 0),
+            "price_change_24h": token.get("price_change_24h", 0)
+        }
     except Exception as e:
         return {
             "name": token.get("name", ""),
             "symbol": token.get("symbol", ""),
             "score": 5,
             "sentiment": "NEUTRAL",
-            "reasoning": f"Analysis failed: {str(e)[:50]}",
+            "reasoning": "Insufficient data",
             "risk": "MEDIUM",
             "price": token.get("price", 0),
             "volume_24h": token.get("volume_24h", 0),
@@ -180,7 +186,6 @@ def run_agent_cycle():
 
     cycle_results = []
 
-    # Hard limit — max 6 open positions total
     if len(open_positions) >= MAX_POSITIONS:
         print(f"Max positions ({MAX_POSITIONS}) reached — skipping new trades this cycle")
         top_markets = []
@@ -226,7 +231,6 @@ def run_agent_cycle():
                 "analysis": analysis
             })
 
-    # Check open positions for exit signals
     positions_to_close = []
     for pos in open_positions:
         current_data = get_market_price(pos["ticker"])
