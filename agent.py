@@ -8,17 +8,17 @@ from database import init_db, save_trade, update_trade, get_open_positions, get_
 
 load_dotenv()
 
-# Initialize database on startup
-init_db()
-
 client = OpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
     base_url="https://api.groq.com/openai/v1"
 )
 
-MAX_POSITIONS = 6
+# Initialize database on startup
+init_db()
 
 def analyze_market(ticker: str, market_data: dict) -> dict:
+    """Multi-model consensus — 3 AI models vote on trade direction"""
+
     prompt = f"""You are an aggressive AI trading agent for MYX Finance perpetual futures on BNB Chain.
 
 Market data for {ticker}:
@@ -59,12 +59,12 @@ Rules:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                timeout=30,
+                timeout=20,
             )
             content = response.choices[0].message.content.strip()
             content = content.replace("```json", "").replace("```", "").strip()
             result = json.loads(content)
-            votes.append(result.get("decision", "SKIP"))
+            votes.append(result.get("decision", "LONG"))
             model_results.append({
                 "model": model,
                 "decision": result.get("decision"),
@@ -73,23 +73,31 @@ Rules:
             })
             print(f"  [{model}] -> {result.get('decision')} ({result.get('confidence')}%)")
         except Exception as e:
-            print(f"  [{model}] -> Failed: {str(e)[:50]}")
-            votes.append("SKIP")
+            print(f"  [{model}] -> Failed: {str(e)[:60]}")
+            # Default vote based on price position
+            try:
+                high = float(market_data['high_24h'])
+                low = float(market_data['low_24h'])
+                price = float(market_data['last_price'])
+                midpoint = (high + low) / 2
+                default_vote = "LONG" if price >= midpoint else "SHORT"
+            except:
+                default_vote = "LONG"
+            votes.append(default_vote)
 
     long_votes = votes.count("LONG")
     short_votes = votes.count("SHORT")
 
-    if long_votes > short_votes:
+    if long_votes >= short_votes:
         final_decision = "LONG"
-    elif short_votes > long_votes:
-        final_decision = "SHORT"
     else:
-        final_decision = "LONG"
+        final_decision = "SHORT"
 
     avg_confidence = 70
     try:
         confidences = [r.get("confidence", 70) for r in model_results if r.get("confidence")]
-        avg_confidence = int(sum(confidences) / len(confidences))
+        if confidences:
+            avg_confidence = int(sum(confidences) / len(confidences))
     except:
         pass
 
@@ -108,7 +116,7 @@ Rules:
 
 
 def score_meme_token(token: dict) -> dict:
-    """Score meme token based on price action"""
+    """Score meme token based on price action — instant, no API call"""
     try:
         change = float(token.get("price_change_24h", 0))
         volume = float(token.get("volume_24h", 0))
@@ -133,6 +141,7 @@ def score_meme_token(token: dict) -> dict:
             score -= 1
 
         score = max(1, min(10, score))
+
         sentiment = "BULLISH" if change > 5 else "BEARISH" if change < -5 else "NEUTRAL"
         risk = "HIGH" if abs(change) > 50 else "MEDIUM" if abs(change) > 20 else "LOW"
         reasoning = f"{'High' if volume > 1e6 else 'Low'} volume with {change:+.1f}% price change"
@@ -163,11 +172,11 @@ def score_meme_token(token: dict) -> dict:
 
 
 def scan_and_score_memes() -> list:
+    """Scan trending meme tokens and score them"""
     from fourmeme_scanner import get_trending_tokens
     tokens = get_trending_tokens(limit=6)
     scored = []
     for token in tokens:
-        print(f"Scoring {token.get('name')}...")
         score = score_meme_token(token)
         scored.append(score)
     scored.sort(key=lambda x: x.get("score", 0), reverse=True)
@@ -175,6 +184,8 @@ def scan_and_score_memes() -> list:
 
 
 def run_agent_cycle():
+    """Run one full agent cycle — fetch markets, analyze, simulate trades"""
+
     print(f"\n{'='*50}")
     print(f"Agent cycle started: {datetime.now().strftime('%H:%M:%S')}")
     print(f"{'='*50}")
@@ -182,15 +193,16 @@ def run_agent_cycle():
     prices = get_all_prices()
 
     if not prices:
-        return {"error": "Could not fetch MYX market data", "trades": [], "positions": []}
+        return {"error": "Could not fetch MYX market data", "trades": [], "open_positions": get_open_positions()}
 
     cycle_results = []
 
-    # Load positions from DB
+    # Load current open positions from DB
     open_positions = get_open_positions()
 
-    if len(open_positions) >= MAX_POSITIONS:
-        print(f"Max positions ({MAX_POSITIONS}) reached — skipping new trades")
+    # Hard limit — max 6 open positions
+    if len(open_positions) >= 6:
+        print("Max positions (6) reached — skipping new trades this cycle")
         top_markets = []
     else:
         open_tickers = [p["ticker"] for p in open_positions]
@@ -206,26 +218,26 @@ def run_agent_cycle():
 
         analysis = analyze_market(ticker, detailed)
         print(f"Decision: {analysis['decision']} | Confidence: {analysis.get('confidence', 0)}%")
+        print(f"Consensus: {analysis.get('reasoning', '')}")
 
-        if analysis["decision"] in ["LONG", "SHORT"] and analysis.get("confidence", 0) > 30:
-            is_long = analysis["decision"] == "LONG"
-            order = simulate_order(
-                ticker=ticker,
-                is_long=is_long,
-                collateral=analysis.get("collateral_usdc", 10),
-                leverage=analysis.get("suggested_leverage", 2),
-                entry_price=float(detailed["last_price"])
-            )
+        is_long = analysis["decision"] == "LONG"
+        order = simulate_order(
+            ticker=ticker,
+            is_long=is_long,
+            collateral=analysis.get("collateral_usdc", 10),
+            leverage=analysis.get("suggested_leverage", 2),
+            entry_price=float(detailed["last_price"])
+        )
 
-            order["analysis"] = analysis
-            order["id"] = f"trade_{int(datetime.now().timestamp())}_{ticker}"
-            order["created_at"] = datetime.now().isoformat()
+        order["analysis"] = analysis
+        order["id"] = f"trade_{ticker}_{int(datetime.now().timestamp())}"
+        order["created_at"] = datetime.now().isoformat()
 
-            save_trade(order)
-            print(f"Opened {order['direction']} on {ticker}")
-            cycle_results.append(order)
+        save_trade(order)
+        print(f"✅ Simulated {order['direction']} position opened on {ticker}")
+        cycle_results.append(order)
 
-    # Check open positions for exit
+    # Check open positions for exit signals
     open_positions = get_open_positions()
     for pos in open_positions:
         current_data = get_market_price(pos["ticker"])
@@ -233,39 +245,47 @@ def run_agent_cycle():
             continue
 
         current_price = float(current_data["last_price"])
-        entry_price = float(pos["entry_price"])
+        entry_price = pos["entry_price"]
+
+        if entry_price == 0:
+            continue
+
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
         if pos.get("direction") != "LONG":
             pnl_pct = -pnl_pct
 
+        pnl_usdc = (pnl_pct / 100) * pos.get("collateral_usdc", 10)
+
+        # Close if +1% profit or -1% loss
         if pnl_pct >= 1 or pnl_pct <= -1:
-            close = simulate_close(
-                ticker=pos["ticker"],
-                is_long=pos["direction"] == "LONG",
-                entry_price=entry_price,
-                current_price=current_price,
-                size=pos["size_amount"],
-                collateral=pos["collateral_usdc"]
-            )
             update_trade(pos["id"], {
                 "status": "SIMULATED_CLOSE",
                 "current_price": current_price,
-                "pnl_usdc": close["pnl_usdc"],
-                "pnl_percent": close["pnl_percent"],
+                "pnl_usdc": round(pnl_usdc, 4),
+                "pnl_percent": round(pnl_pct, 2),
                 "closed_at": datetime.now().isoformat()
             })
-            print(f"Closed {pos['ticker']} | PnL: {close['pnl_percent']}%")
+            print(f"🔴 Closed {pos['ticker']} | PnL: {round(pnl_pct, 2)}%")
+        else:
+            update_trade(pos["id"], {
+                "status": "SIMULATED",
+                "current_price": current_price,
+                "pnl_usdc": round(pnl_usdc, 4),
+                "pnl_percent": round(pnl_pct, 2),
+            })
 
     stats = get_portfolio_stats()
     return {
         "cycle_time": datetime.now().isoformat(),
         "markets_analyzed": len(top_markets),
         "trades_this_cycle": cycle_results,
+        "open_positions": get_open_positions(),
         "total_trades": stats["total_trades"]
     }
 
 
 def get_portfolio_summary():
+    """Get current portfolio state from database"""
     stats = get_portfolio_stats()
     trades = get_all_trades()
     open_positions = get_open_positions()
@@ -275,6 +295,6 @@ def get_portfolio_summary():
         "open_positions": stats["open_positions"],
         "closed_positions": stats["closed_positions"],
         "total_pnl_usdc": stats["total_pnl_usdc"],
-        "trade_log": trades[:20],
+        "trade_log": trades,
         "open_positions_detail": open_positions
     }
